@@ -22,11 +22,21 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The frontend connects to `http://localhost:5000` by default; set `NEXT_PUBLIC_CELL_HEALTH_API_URL` to change the API origin. If the local model API is still loading or unavailable, the frontend switches to clearly labeled simulated demo data and reconnects automatically.
 
+If port 5000 is already in use, start the API on another port and point the frontend to it:
+
+```sh
+dotnet run --project backend/CellHealthApi.csproj --urls http://localhost:5001
+cd frontend
+NEXT_PUBLIC_CELL_HEALTH_API_URL=http://127.0.0.1:5001 npm run dev
+```
+
+When connected, the local chat model asks role-specific follow-up questions. After three responses, the local model classifies the participant's answers and writes an anonymized summary; the embedding model indexes that summary for semantic search. The simulated fallback uses simple keyword matching and is not semantic analysis.
+
 ## Endpoints
 
 - `GET /api/dashboard?role=member|leader|staff&groupId=G001`
 - `POST /api/chat` with `{ "role": "member", "message": "...", "history": [] }`
-- `POST /api/analyze` with `{ "groupId": "G001", "role": "member", "synthesizedSummary": "...", "transcript": "..." }`
+- `POST /api/analyze` with `{ "groupId": "G001", "role": "member", "participantResponses": ["..."], "synthesizedSummary": "...", "transcript": "..." }`
 - `POST /api/search` with `{ "query": "..." }`
 
 The demo has no authentication or user identity layer. Member dashboard responses expose only group check-in status; leader requests are scoped to one requested group and expose domain aggregates only after at least three check-ins. Staff dashboards expose metrics for all 108 groups, with seed summaries and burnout alerts for groups that have data.

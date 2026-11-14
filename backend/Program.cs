@@ -168,14 +168,15 @@ static async Task<IResult> Chat(
         return Results.BadRequest(new { error = "A check-in conversation is limited to three user turns." });
     }
 
-    var prompt = BuildChatPrompt(request.Message, history, turn);
+    var prompt = BuildChatPrompt(request.Role, request.Message, history, turn);
     await inferenceLock.WaitAsync(cancellationToken);
     try
     {
         using var conversation = new MultiTurnConversation(models.ChatModel)
         {
             SystemPrompt = GetSystemPrompt(request.Role),
-            MaximumCompletionTokens = 160
+            MaximumCompletionTokens = 160,
+            ReasoningLevel = LMKit.TextGeneration.Chat.ReasoningLevel.None
         };
         var generated = await conversation.SubmitAsync(prompt, cancellationToken);
         var response = LimitToTwoSentences(generated.Content);
@@ -216,6 +217,16 @@ static async Task<IResult> Analyze(
         return Results.BadRequest(new { error = "transcript must be at most 20000 characters." });
     }
 
+    var participantText = string.Join(
+        "\n\n",
+        request.ParticipantResponses?
+            .Where(response => !string.IsNullOrWhiteSpace(response))
+            .Select(response => response.Trim()) ?? []);
+    if (string.IsNullOrWhiteSpace(participantText))
+    {
+        participantText = request.SynthesizedSummary.Trim();
+    }
+
     await inferenceLock.WaitAsync(cancellationToken);
     try
     {
@@ -225,7 +236,7 @@ static async Task<IResult> Analyze(
         };
         var categoryIndex = await categorizer.GetBestCategoryAsync(
             CellHealthConfig.Categories,
-            request.SynthesizedSummary,
+            participantText,
             normalize: true,
             cancellationToken: cancellationToken);
         if (categoryIndex < 0 || categoryIndex >= CellHealthConfig.Categories.Length)
@@ -237,8 +248,23 @@ static async Task<IResult> Analyze(
         var domain = CellHealthConfig.CategoryDomains[category];
         var sentiment = CellHealthConfig.CategorySentiments[category];
         var burnout = category == "leader exhaustion or burnout";
+        using var summaryConversation = new MultiTurnConversation(models.ChatModel)
+        {
+            SystemPrompt = "Create a brief, compassionate, anonymized summary of a church-group check-in. Describe themes, not individuals. Never include names, identifying details, or direct quotes. Do not diagnose or make claims beyond what the participant shared.",
+            MaximumCompletionTokens = 120,
+            ReasoningLevel = LMKit.TextGeneration.Chat.ReasoningLevel.None
+        };
+        var summaryResult = await summaryConversation.SubmitAsync(
+            $"Summarize the themes in these participant responses in one or two sentences:\n\n{participantText}",
+            cancellationToken);
+        var synthesizedSummary = LimitToTwoSentences(summaryResult.Content);
+        if (string.IsNullOrWhiteSpace(synthesizedSummary))
+        {
+            return Results.Problem("The model did not return an anonymized check-in summary.");
+        }
+
         var embedding = await models.Embedder.GetEmbeddingsAsync(
-            request.SynthesizedSummary,
+            synthesizedSummary,
             cancellationToken);
 
         var checkIn = new CheckIn
@@ -246,7 +272,7 @@ static async Task<IResult> Analyze(
             Id = Guid.NewGuid().ToString("N"),
             GroupId = group.Id,
             Role = request.Role,
-            SynthesizedSummary = request.SynthesizedSummary.Trim(),
+            SynthesizedSummary = synthesizedSummary,
             Transcript = request.Transcript?.Trim() ?? "",
             CreatedAt = DateTimeOffset.UtcNow,
             PrimaryDomain = domain,
@@ -264,7 +290,8 @@ static async Task<IResult> Analyze(
             category,
             checkIn.PrimaryDomain,
             checkIn.HealthSentiment,
-            checkIn.BurnoutFlag
+            checkIn.BurnoutFlag,
+            synthesizedSummary
         });
     }
     finally
@@ -318,7 +345,7 @@ static async Task<IResult> Search(
     }
 }
 
-static string BuildChatPrompt(string message, IReadOnlyList<ChatMessageRequest> history, int turn)
+static string BuildChatPrompt(string role, string message, IReadOnlyList<ChatMessageRequest> history, int turn)
 {
     var prompt = new StringBuilder();
     prompt.AppendLine($"This is check-in turn {turn} of 3.");
@@ -335,11 +362,21 @@ static string BuildChatPrompt(string message, IReadOnlyList<ChatMessageRequest> 
     prompt.AppendLine("Current participant message:");
     prompt.Append(message);
     prompt.AppendLine();
-    prompt.Append(turn switch
+    prompt.Append(role switch
     {
-        1 => "Respond warmly, then ask one gentle open question about trust, authenticity, or belonging in their group.",
-        2 => "Acknowledge what they shared, then ask one gentle question about mutual care and how burdens are shared.",
-        _ => "Acknowledge what they shared, then ask one gentle closing question about sustainability and what support would help."
+        "member" => turn switch
+        {
+            1 => "Briefly acknowledge the participant's answer, then ask this question exactly: \"When you have a hard week, what kind of support from someone in the group would help you most?\" Do not ask another question.",
+            2 => "Briefly acknowledge the answer, then ask this question exactly: \"What is one small thing the group could do to help you feel more connected or supported?\" Do not ask another question.",
+            _ => "Close warmly in one short statement. Do not ask another question; the check-in is complete."
+        },
+        "leader" => turn switch
+        {
+            1 => "Briefly acknowledge the leader's answer, then ask this question exactly: \"What part of leading has been hardest to manage lately?\" Do not ask another question.",
+            2 => "Briefly acknowledge the answer, then ask this question exactly: \"What is one responsibility you could share with someone else to make leading more sustainable?\" Do not ask another question.",
+            _ => "Close warmly in one short statement. Do not ask another question; the check-in is complete."
+        },
+        _ => "Acknowledge the answer briefly and ask no more than one open question."
     });
     return prompt.ToString();
 }
@@ -625,6 +662,7 @@ internal sealed class AnalyzeRequest
 {
     public string GroupId { get; set; } = "";
     public string Role { get; set; } = "";
+    public List<string>? ParticipantResponses { get; set; }
     public string SynthesizedSummary { get; set; } = "";
     public string? Transcript { get; set; }
 }

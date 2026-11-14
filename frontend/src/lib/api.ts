@@ -74,6 +74,7 @@ export const cellHealthApi = {
   analyze(input: {
     groupId: string;
     role: DemoRole;
+    participantResponses: string[];
     synthesizedSummary: string;
     transcript: string;
   }) {

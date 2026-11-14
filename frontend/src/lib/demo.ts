@@ -242,17 +242,15 @@ export function makeDemoDashboard(): StaffDashboardResponse {
 export function makeMockChatReply(role: DemoRole, turn: number): string {
   if (turn === 1) {
     return role === "leader"
-      ? "Thanks for making room for this. What has been giving your group life lately, and where might a few people still be waiting to feel included?"
-      : "I’m glad you’re here. What has helped you feel safe, known, or welcomed in your group recently?";
+      ? "I hear how much you care about the group. What part of leading has been hardest to manage lately?"
+      : "Thank you for sharing that. When you have a hard week, what kind of support from someone in the group would help you most?";
   }
   if (turn === 2) {
     return role === "leader"
-      ? "That’s helpful to notice. How are rest and the practical needs of leading feeling, and what would you like to share or receive?"
-      : "Thank you for sharing that. When a hard week comes along, how does care move through the group?";
+      ? "What is one responsibility you could share with someone else to make leading more sustainable?"
+      : "What is one small thing the group could do to help you feel more connected or supported?";
   }
-  return role === "leader"
-    ? "I hear the care you’re carrying. What is one small next step or coaching support that could make the next season more sustainable?"
-    : "I appreciate your honesty. What is one small thing that would help your group feel safer or more connected this week?";
+  return "Thank you for being open. Your reflections will be considered as shared themes, not shown as individual answers.";
 }
 
 export function makeMockAnalysis(

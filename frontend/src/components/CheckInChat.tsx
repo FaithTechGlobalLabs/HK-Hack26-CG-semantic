@@ -27,8 +27,8 @@ type CheckInChatProps = {
 };
 
 const firstPrompts: Record<CheckInChatProps["role"], string> = {
-  member: "What has helped you feel safe, known, or welcomed in your group recently?",
-  leader: "What has been giving your group life lately, and where might a few people still be waiting to feel included?",
+  member: "Thinking about the past few weeks, when have you felt comfortable being yourself in your group?",
+  leader: "What is going well in your group, and who seems to be having trouble feeling included?",
 };
 
 export function CheckInChat({
@@ -88,6 +88,9 @@ export function CheckInChat({
 
     if (turn === 3) {
       const synthesizedSummary = formatSummary(completedLines);
+      const participantResponses = completedLines
+        .filter((line) => line.role === "user")
+        .map((line) => line.content);
       const transcript = completedLines
         .map((line) => `${line.role === "user" ? "Participant" : "Pastoral companion"}: ${line.content}`)
         .join("\n");
@@ -100,6 +103,7 @@ export function CheckInChat({
           result = await cellHealthApi.analyze({
             groupId: "group-14",
             role,
+            participantResponses,
             synthesizedSummary,
             transcript,
           });
@@ -113,6 +117,7 @@ export function CheckInChat({
         setSimulated(true);
       }
 
+      setSummary(result.synthesizedSummary ?? synthesizedSummary);
       setAnalysis(result);
       setIsAnalyzing(false);
       onAnalysisComplete?.(result);

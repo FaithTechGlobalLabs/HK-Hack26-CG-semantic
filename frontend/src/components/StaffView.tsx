@@ -155,6 +155,7 @@ export function StaffView({
         result = await cellHealthApi.analyze({
           groupId: meetingGroup,
           role: "staff",
+          participantResponses: [note],
           synthesizedSummary: summary,
           transcript: note,
         });

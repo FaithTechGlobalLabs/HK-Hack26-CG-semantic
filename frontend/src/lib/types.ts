@@ -67,6 +67,7 @@ export type AnalysisResponse = {
   primaryDomain: Domain;
   healthSentiment: number;
   burnoutFlag: boolean;
+  synthesizedSummary?: string;
 };
 
 export type SearchMatch = {
