@@ -10,7 +10,16 @@ Install the .NET 8 SDK or newer and Node.js 22+, then start the API:
 dotnet run --project backend/CellHealthApi.csproj
 ```
 
-The first launch downloads `qwen3.5:4b` and `nomic-embed-text` through LM-Kit's model catalog. Allow several gigabytes of free disk space. The API allows browser requests from `http://localhost:3000`.
+On an interactive terminal, the backend loads `nomic-embed-text` and uses it to rank chat-model descriptions against what you type (for example, “a small, fast model for warm pastoral conversations”). The match score measures similarity to your description, not model quality. Results show whether a model is already downloaded, its catalog file size, and a rough fit estimate based on this computer's memory budget. Choose a result to download it if needed. The estimate is not a guarantee: actual memory use also depends on runtime settings, context length, and other apps.
+
+Choices come from the chat-capable models in the installed LM-Kit.NET predefined catalog, not from a live search across every model published online. Updating LM-Kit.NET can update the catalog. The default is `qwen3.5:4b` when it is present; otherwise the first catalog model is used. The selected chat model and `nomic-embed-text` are downloaded automatically if they are not already cached; allow several gigabytes of free disk space. To select a model without the prompt, set `CELL_HEALTH_CHAT_MODEL` to a chat-capable catalog ID, or pass `--ChatModelId <model-id>` to the app. For example:
+
+```sh
+CELL_HEALTH_CHAT_MODEL=qwen3.5:9b dotnet run --project backend/CellHealthApi.csproj
+dotnet run --project backend/CellHealthApi.csproj -- --ChatModelId llama-3.2-3b
+```
+
+In non-interactive sessions, the API uses `qwen3.5:4b` unless a model is configured. The embedding model remains `nomic-embed-text`. The API allows browser requests from `http://localhost:3000`.
 
 In another terminal, start the web app:
 

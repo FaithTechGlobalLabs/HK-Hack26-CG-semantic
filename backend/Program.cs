@@ -20,9 +20,15 @@ var dataPath = File.Exists(contentRootDataPath)
     : Path.Combine(builder.Environment.ContentRootPath, "backend", "demo-data.json");
 var store = await DemoStore.LoadAsync(dataPath);
 
-var chatModel = LM.LoadFromModelID("qwen3.5:4b");
+Console.WriteLine("Loading the local embedding model for model recommendations and semantic search.");
 var embeddingModel = LM.LoadFromModelID("nomic-embed-text");
 var embedder = new Embedder(embeddingModel);
+var chatModelId = await SelectChatModelIdAsync(
+    builder.Configuration["ChatModelId"] ??
+    Environment.GetEnvironmentVariable("CELL_HEALTH_CHAT_MODEL"),
+    embedder);
+Console.WriteLine($"Loading chat model '{chatModelId}'. The first run may download several GB.");
+var chatModel = LM.LoadFromModelID(chatModelId);
 var seededEmbeddings = await embedder.GetEmbeddingsAsync(
     store.CheckIns.Select(checkIn => checkIn.SynthesizedSummary));
 if (seededEmbeddings.Length != store.CheckIns.Count)
@@ -343,6 +349,163 @@ static async Task<IResult> Search(
     {
         inferenceLock.Release();
     }
+}
+
+static async Task<string> SelectChatModelIdAsync(string? configuredModelId, Embedder embedder)
+{
+    var chatModels = ModelCard.GetPredefinedModelCards(dropSmallerModels: false)
+        .Where(card =>
+            card.Capabilities.HasFlag(ModelCapabilities.Chat) &&
+            !string.IsNullOrWhiteSpace(card.ModelID))
+        .OrderBy(card => card.ParameterCount)
+        .ThenBy(card => card.ModelName, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    if (chatModels.Length == 0)
+    {
+        throw new InvalidOperationException("The LM-Kit catalog contains no chat-capable models.");
+    }
+
+    var defaultModel = chatModels.FirstOrDefault(card =>
+        string.Equals(card.ModelID, "qwen3.5:4b", StringComparison.OrdinalIgnoreCase)) ?? chatModels[0];
+
+    if (!string.IsNullOrWhiteSpace(configuredModelId))
+    {
+        var configuredModel = chatModels.FirstOrDefault(card =>
+            string.Equals(card.ModelID, configuredModelId.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (configuredModel is null)
+        {
+            throw new InvalidOperationException(
+                $"'{configuredModelId}' is not a chat-capable model in the LM-Kit catalog.");
+        }
+
+        return configuredModel.ModelID;
+    }
+
+    if (Console.IsInputRedirected || Console.IsOutputRedirected)
+    {
+        Console.WriteLine($"No chat model selected in a non-interactive session; using {defaultModel.ModelID}.");
+        return defaultModel.ModelID;
+    }
+
+    Console.WriteLine($"Preparing semantic search across {chatModels.Length} chat-capable models.");
+    var modelDescriptions = chatModels.Select(BuildModelDescription).ToArray();
+    var modelEmbeddings = await embedder.GetEmbeddingsAsync(modelDescriptions);
+    if (modelEmbeddings.Length != chatModels.Length)
+    {
+        throw new InvalidOperationException("The embedding model returned an incomplete model-catalog batch.");
+    }
+
+    var availableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+    if (availableMemoryBytes > 0)
+    {
+        Console.WriteLine(
+            $"Estimated memory budget: {availableMemoryBytes / (1024d * 1024 * 1024):F1} GB. " +
+            "Fit labels are rough; actual use also depends on runtime and context size.");
+    }
+
+    while (true)
+    {
+        Console.Write("Describe what you need from the chat model (or type 'default' to use the default): ");
+        var query = Console.ReadLine()?.Trim();
+        if (string.IsNullOrWhiteSpace(query) ||
+            string.Equals(query, "default", StringComparison.OrdinalIgnoreCase))
+        {
+            return defaultModel.ModelID;
+        }
+
+        var queryEmbeddings = await embedder.GetEmbeddingsAsync(new[] { query });
+        if (queryEmbeddings.Length != 1)
+        {
+            throw new InvalidOperationException("The embedding model did not return a query embedding.");
+        }
+
+        var matches = chatModels
+            .Select((card, index) => new
+            {
+                Card = card,
+                Similarity = CosineSimilarity(queryEmbeddings[0], modelEmbeddings[index])
+            })
+            .OrderByDescending(match => match.Similarity)
+            .Take(10)
+            .ToArray();
+
+        Console.WriteLine("Closest matches:");
+        for (var index = 0; index < matches.Length; index++)
+        {
+            var model = matches[index].Card;
+            var name = string.IsNullOrWhiteSpace(model.ModelName) ? model.ModelID : model.ModelName;
+            var size = model.FileSize > 0
+                ? $"{model.FileSize / (1024d * 1024 * 1024):F1} GB"
+                : "size unknown";
+            var availability = model.IsLocallyAvailable ? "downloaded" : $"download {size}";
+            var fit = GetModelFitEstimate(model, availableMemoryBytes);
+            Console.WriteLine(
+                $"  {index + 1}. {name} [{model.ModelID}] — match {matches[index].Similarity:P0}, {availability}, {fit}");
+            if (!string.IsNullOrWhiteSpace(model.Description))
+            {
+                Console.WriteLine($"     {model.Description}");
+            }
+        }
+
+        Console.Write($"Select a model [1-{matches.Length}], or press Enter to describe your needs again: ");
+        var selectionInput = Console.ReadLine();
+        if (int.TryParse(selectionInput, out var selection) && selection >= 1 && selection <= matches.Length)
+        {
+            return matches[selection - 1].Card.ModelID;
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectionInput))
+        {
+            Console.WriteLine($"Enter a number from 1 to {matches.Length}, or press Enter to search again.");
+        }
+    }
+}
+
+static string BuildModelDescription(ModelCard card) =>
+    $"{card.ModelName} ({card.ModelID}). {card.Description} " +
+    $"Chat model with {card.ParameterCount} parameters and a {card.FileSize}-byte model file.";
+
+static double CosineSimilarity(IReadOnlyList<float> first, IReadOnlyList<float> second)
+{
+    if (first.Count == 0 || first.Count != second.Count)
+    {
+        throw new InvalidOperationException("Model catalog embeddings have incompatible dimensions.");
+    }
+
+    double dotProduct = 0;
+    double firstMagnitude = 0;
+    double secondMagnitude = 0;
+    for (var index = 0; index < first.Count; index++)
+    {
+        dotProduct += first[index] * second[index];
+        firstMagnitude += first[index] * first[index];
+        secondMagnitude += second[index] * second[index];
+    }
+
+    var denominator = Math.Sqrt(firstMagnitude * secondMagnitude);
+    if (denominator == 0)
+    {
+        throw new InvalidOperationException("The embedding model returned an empty model-catalog embedding.");
+    }
+
+    return dotProduct / denominator;
+}
+
+static string GetModelFitEstimate(ModelCard model, long availableMemoryBytes)
+{
+    if (availableMemoryBytes <= 0 || model.FileSize <= 0)
+    {
+        return "fit unknown";
+    }
+
+    if (model.FileSize > availableMemoryBytes)
+    {
+        return "model file exceeds the memory budget";
+    }
+
+    return model.FileSize <= availableMemoryBytes / 2
+        ? "likely to fit (rough estimate)"
+        : "may be tight; runtime needs extra memory";
 }
 
 static string BuildChatPrompt(string role, string message, IReadOnlyList<ChatMessageRequest> history, int turn)
