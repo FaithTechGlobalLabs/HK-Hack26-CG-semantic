@@ -1,0 +1,29 @@
+# .NET build output
+bin/
+obj/
+publish/
+TestResults/
+*.dll
+*.pdb
+*.user
+*.suo
+
+# Node.js and Next.js
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local environment and secrets
+.env*
+!.env.example
+
+# Logs and local OS/editor files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vs/
